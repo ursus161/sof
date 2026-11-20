@@ -33,6 +33,74 @@ algorithm. Swapping a stub for the real algorithm later is one Kconfig line.
 - Build with XCC (`scripts/xtensa-build-zephyr.py imx8m`); record image size and heap.
 - **Gate:** firmware boots on the EVK.
 
+### Step 1b: test LFO backend for `webrtc_aec` (dev only, `DNM`)
+
+Why: the upstream stub is a `memcpy`, so Voice == Raw. A topology that wired
+Voice straight from the DAI and skipped the AEC would pass every skeleton
+gate. A placeholder that leaves a visible, measurable mark proves the audio
+really went through the AEC slot, and mixing in a bit of the reference proves
+the reference is wired, without probes.
+
+Constraint: same component, UUID, pins and topology as the real AEC. It is
+only a **backend**, picked in Kconfig, so the "real algorithm = one Kconfig
+line" rule still holds. Dropped before upstream with the other `DNM` commits.
+
+What already exists (read before writing):
+
+- `src/audio/webrtc_aec/Kconfig`: `choice WEBRTC_AEC_BACKEND` with
+  `WEBRTC_AEC_BACKEND_FLOAT`, `_AEC3`, `_AECM`, `COMP_WEBRTC_AEC_STUB`.
+- `src/audio/webrtc_aec/webrtc_aec-stub.c`: the template. A backend exports
+  `const struct webrtc_aec_backend webrtc_aec_backend` with `init`,
+  `configure(rate, filter_len_ms, suppression, num_channels)`,
+  `set_suppression`, `process_ch(mod, mic, ref, out, frame_samples, ch)`,
+  `reset`, `free`.
+- `process_ch` works on **int16, one channel, one frame**, after the
+  frontend's internal 48 -> 16 kHz resample (`webrtc_aec.c` does the S32/S16
+  conversion and resampling around it). So a 10 ms frame is 160 samples.
+- `src/audio/webrtc_aec/CMakeLists.txt`: `if(CONFIG_COMP_WEBRTC_AEC_STUB)
+  add_local_sources(sof webrtc_aec-stub.c) else() ...webrtc-apm...`.
+
+What to write:
+
+1. **Kconfig:** add to the choice
+   ```
+   config WEBRTC_AEC_BACKEND_TEST_LFO
+   	bool "Test backend: LFO gain on mic + reference mix (dev only)"
+   	help
+   	  Architecture test. out = mic * g(t) + ref / 4, with
+   	  g(t) = 0.625 + 0.375 * sin(2*pi*2Hz*t) (about -12..0 dB).
+   	  No WebRTC source needed.
+   ```
+2. **CMake:** an `elseif(CONFIG_WEBRTC_AEC_BACKEND_TEST_LFO)` branch that adds
+   only `webrtc_aec.c` + `webrtc_aec-test-lfo.c` (no webrtc-apm, no C++).
+3. **`webrtc_aec-test-lfo.c`**, cloned from the stub:
+   - State (from `mod_zalloc`/module private data, not a global): a 32-bit
+     phase accumulator, and the phase increment
+     `inc = 2^32 * 2 / sample_rate` computed in `configure` (rate is the
+     internal rate the frontend passes, 16 kHz).
+   - Gain from a 256-entry Q15 sine table indexed by `phase >> 24`;
+     `g_q15 = 20480 + (12288 * sin_q15 >> 15)` (0.625 +- 0.375).
+   - Per sample: `acc = (mic * g_q15 >> 15) + (ref >> 2)`, saturate to int16.
+     Gain is <= 1, so only the ref mix can push it to clip, hence saturate.
+   - Advance the phase per sample on `ch == 0` only (keep one phase per
+     stream, all channels in sync); for `ch > 0` reuse the gains of ch 0
+     (store a per-frame start phase and recompute, or keep a phase per channel
+     set equal at `reset`).
+   - `reset` zeroes the phase; `init`/`configure` log like the stub:
+     `webrtc_aec test-lfo: rate=%d ch=%d f=2Hz depth=12dB ref_mix=-12dB`.
+   - Doxygen on the file and functions (AGENTS.md). Cost: one table lookup
+     and two multiplies per sample, negligible in the 1 ms LL tick.
+4. **Board conf (dev):** `CONFIG_WEBRTC_AEC_BACKEND_TEST_LFO=y` instead of
+   `COMP_WEBRTC_AEC_STUB=y`. NS and HPF stay on their stubs.
+5. **Commits:**
+   - `DNM: audio: webrtc_aec: add test LFO backend for architecture bring-up`
+   - Kept separate from the upstream-bound board-conf commit, which uses the
+     plain stub.
+
+Expected result: with music playing and nobody talking, Voice = the room
+echo pumping at 2 Hz between 0 and -12 dB, plus the playback itself at -12 dB.
+Raw = flat.
+
 ### Step 2: component macros
 
 - `tools/topology/topology1/m4/webrtc_aec.m4`, `webrtc_ns.m4`, `webrtc_hpf.m4`
@@ -65,10 +133,31 @@ algorithm. Swapping a stub for the real algorithm later is one Kconfig line.
 
 ### Step 5: verify on the EVK
 
-- `scripts/voice-loop/voice-loop.sh` with `GATES=passlvl,passcorr,xrun`:
-  Voice equals Raw (level within 1 dB, correlation >= 0.9), no xruns.
-- Trace shows `webrtc_aec: mic_src=<n> ref_src=<m>` with a valid reference.
-- SOF probes on the AEC reference input show the reference stream (stubs ignore it).
+Two runs, same topology, only Kconfig differs:
+
+1. **Test LFO backend:** `GATES=lfo,xrun`
+   - New gate `lfo` in `scripts/voice-loop/voice_metrics.py` (evk mode, far span):
+     - Raw and Voice aligned as for `passcorr`. Voice has the -12 dB ref mix
+       on top, so measure where the far-end echo dominates; or subtract a
+       least-squares fit of the far-end reference first.
+     - Level ratio Voice/Raw in dB per 10 ms block -> a 100 Hz envelope.
+     - PASS if the envelope swing (95th - 5th percentile) is 12 dB +- 3 dB
+       **and** the strongest component of its spectrum is 2 Hz +- 0.25 Hz.
+     - Metrics: `lfo_swing_db`, `lfo_freq_hz`.
+   - Reference check without probes: correlation of Voice with the played
+     far signal (not the mic echo: at the speaker-side delay) is clearly
+     above that of Raw. Optional gate `refmix`, report-only at first.
+   - Self-test in `voice_metrics.py`: synthetic Raw, Voice = Raw * LFO passes;
+     Voice = Raw (stub, or AEC skipped) fails; wrong frequency fails.
+   - Add `lfo` to the gates table in `scripts/voice-loop/README.md`.
+2. **Upstream stub backend:** `GATES=passlvl,passcorr,xrun`: Voice equals
+   Raw (level within 1 dB, correlation >= 0.9), no xruns. This is the
+   configuration the upstream PR ships.
+
+In both runs:
+
+- Trace shows `webrtc_aec: mic_src=<n> ref_src=<m>` with `ref_src >= 0`.
+- SOF probes on the AEC reference input show the playback stream (exact delay and alignment).
 
 ---
 
@@ -186,6 +275,7 @@ on real recordings, then freeze.
 - [x] Source audit of SOF main (section 3)
 - [ ] Board conf: `CONFIG_COMP_WEBRTC_{AEC,NS,HPF}=y` with `_STUB=y`; build `imx8m` (Zephyr, IPC3)
 - [ ] Boot on the EVK; record image size and heap use
+- [ ] DNM test LFO backend for `webrtc_aec` + `lfo` gate (section 1, steps 1b and 5)
 - [ ] Add an imx8m IPC3 webrtc (stub) build to CI
 
 **P1 · Skeleton topology (the whole architecture)**
@@ -195,7 +285,8 @@ on real recordings, then freeze.
 - [ ] Capture: micfil -> HPF -> AEC (ref from the demux, SectionGraph as on MT8195) -> SRC 48->16 -> NS -> Voice PCM; Raw PCM kept
 - [ ] Targets `sof-imx8mp-wm8960-aec` / `-wm8962-aec` in `tools/topology/topology1/CMakeLists.txt`
 - [ ] Trace shows `webrtc_aec: mic_src=… ref_src=…` with a valid ref; probes show the reference stream
-- [ ] `measure` green on passlvl, passcorr, xrun; cycles per call; 24 h soak
+- [ ] `measure` green on lfo, xrun with the test LFO backend
+- [ ] `measure` green on passlvl, passcorr, xrun with the stub; cycles per call; 24 h soak
 
 **P2 · Out of box, still with stubs**
 

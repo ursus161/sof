@@ -7,16 +7,21 @@ Voice capture on the i.MX8MP HiFi4 under IPC3, enabled out of the box:
 micfil DAI (48 kHz) → webrtc_hpf → webrtc_aec (ref = playback demux) →
 SRC 48→16 kHz → webrtc_ns → Voice PCM. Raw PCM stays unprocessed.
 Reuse the upstream webrtc_* modules; write integration only (Kconfig,
-topology1 m4, host-library build of the webrtc modules + topology2 test topology for the bench, IPC3 glue), never new DSP algorithms.
+topology1 m4, host-library build of the webrtc modules + topology2 test topology for the bench, IPC3 glue), never new DSP algorithms (the DNM test LFO backend below is
+the one exception).
 
 ## Definition of done
 `scripts/voice-loop/voice-loop.sh` exits 0 (see scripts/voice-loop/README.md).
 Architecture first, algorithms later. Stages, in order:
-1. Skeleton (stub backends, `CONFIG_COMP_WEBRTC_{AEC,NS,HPF}_STUB=y`):
-   full topology on the EVK, Voice must equal Raw.
-   `GATES=passlvl,passcorr,xrun`, and dmesg/trace must show
-   `webrtc_aec: mic_src=<n> ref_src=<m>` with ref_src >= 0.
-   Check the reference stream itself with SOF probes on the AEC ref input.
+1. Skeleton, full topology on the EVK, two runs (spec: PLAN.md section 1):
+   a. `CONFIG_WEBRTC_AEC_BACKEND_TEST_LFO=y` (DNM test backend: mic gain
+      wobbles 0..-12 dB at 2 Hz, plus ref mixed at -12 dB), NS/HPF stubs:
+      `GATES=lfo,xrun` (swing 12 +- 3 dB, frequency 2 +- 0.25 Hz).
+   b. Upstream stubs, `CONFIG_COMP_WEBRTC_{AEC,NS,HPF}_STUB=y`:
+      Voice must equal Raw, `GATES=passlvl,passcorr,xrun`.
+   In both, dmesg/trace must show `webrtc_aec: mic_src=<n> ref_src=<m>`
+   with ref_src >= 0. Check the reference stream itself with SOF probes on
+   the AEC ref input.
 2. Real NS (`webrtc_ns` real, AEC still stub): `GATES=nr,near,xrun`
 3. Real AEC (Float backend): `bench` first
    (`BENCH_GATES=erle,nr,near,dt,dtsdr`), then `GATES=erle,nr,near,xrun`
@@ -38,6 +43,9 @@ Never relax a threshold to get a PASS; report instead.
 - Architecture first: the whole chain runs with the upstream stub
   backends before any real algorithm; swapping in a real backend is a
   Kconfig change only, never a topology change.
+- The only non-upstream processing code is the test LFO backend of
+  webrtc_aec (`webrtc_aec-test-lfo.c`, `WEBRTC_AEC_BACKEND_TEST_LFO`):
+  a DNM commit, never upstreamed; the upstream board conf uses the stub.
 - Topology mirrors the IPC3 Chromebook AEC topology
   (`sof-mt8195-mt6359-rt1019-rt5682.m4`): volume + demux playback,
   10 ms periods, AEC ref buffer wired to the demux; clone

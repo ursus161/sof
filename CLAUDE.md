@@ -36,8 +36,10 @@ Never relax a threshold to get a PASS; report instead.
 3. Read `scripts/voice-loop/out/latest/metrics.json` and the logs next to it.
 4. On FAIL: fix and repeat. Stop and report after 5 failed iterations,
    or on any deploy error you cannot explain from dmesg.
-5. On PASS: commit (AGENTS.md subject format, no Signed-off-by) and move
-   to the next to-do of the phase.
+5. On PASS: commit (AGENTS.md subject format, no Signed-off-by), then
+   STOP: summarize the diff, what was run and the result, list the exact
+   board commands for the human to check it, and wait for "go" before the
+   next to-do. Never run deploy or measure on the board without a "go".
 
 ## Fixed decisions (do not revisit without new measurements)
 - Architecture first: the whole chain runs with the upstream stub

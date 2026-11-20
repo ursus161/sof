@@ -1,19 +1,31 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-3-Clause
-"""Generate the far-end stimulus for voice-loop.sh.
+"""Generate the test signals for voice-loop.sh.
 
-Layout (seconds), written as 48 kHz stereo S16_LE:
-  [0, LEAD)            silence        - lets pipelines settle
-  [LEAD, LEAD+FAR)     far-end signal - echo for the AEC (ERLE window)
-  [LEAD+FAR, END)      silence        - ambient noise only (NR window)
+One timeline, five windows (default lengths in seconds):
 
-The far-end signal is a user-supplied WAV (music/speech, recommended) or,
-by default, speech-shaped noise bursts so the loop runs with no assets.
-The layout is written next to the WAV as JSON so voice_metrics.py knows
-the windows.
+  lead (2)     silence                  pipelines settle
+  far  (12)    far-end only             ERLE: echo must disappear
+  dt   (6)     far-end + near-end       double talk: near-end must survive
+  near (6)     near-end only            near-end must pass unharmed
+  noise (6)    neither                  NR: ambient noise must drop
+
+Outputs in OUT_DIR:
+  far.wav        48 kHz stereo S16, played by the EVK speaker (echo source)
+  near.wav       48 kHz mono S16, near-end talker on the same timeline;
+                 played by a second device on the EVK run (NEAR_PLAY_CMD)
+  mic_bench.wav  48 kHz mono S16 synthetic microphone for the testbench:
+                 far-end through a room impulse response + near + noise
+  near_clean.wav near-end exactly as mixed into mic_bench.wav (reference)
+  layout.json    window boundaries, read by voice_metrics.py
+  *.raw          headerless copies of the WAVs for the SOF testbench
+
+Default signals are synthetic so the loop runs with no assets; pass real
+recordings with --far-wav / --near-wav / --ir-wav for meaningful scores.
 """
 import argparse
 import json
+import os
 import wave
 
 import numpy as np
@@ -21,59 +33,100 @@ import numpy as np
 RATE = 48000
 
 
-def speech_shaped_bursts(seconds, rng):
-    """Pink-ish noise, amplitude-modulated in ~250 ms syllable bursts."""
-    n = int(seconds * RATE)
-    white = rng.standard_normal(n)
-    spec = np.fft.rfft(white)
-    freqs = np.fft.rfftfreq(n, 1 / RATE)
-    shape = 1 / np.sqrt(np.maximum(freqs, 100.0))
-    shape[freqs > 7000] *= 0.1
-    pink = np.fft.irfft(spec * shape, n)
-    env = (np.sin(2 * np.pi * 4 * np.arange(n) / RATE) > -0.3).astype(float)
-    sig = pink * env
-    return 0.3 * sig / np.max(np.abs(sig))
+def write_wav(path, x, channels=1):
+    pcm = np.clip(x * 32767, -32768, 32767).astype(np.int16)
+    if channels == 2:
+        pcm = np.repeat(pcm[:, None], 2, axis=1)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(pcm.tobytes())
+    pcm.tofile(os.path.splitext(path)[0] + ".raw")
 
 
-def read_far_end(path, seconds):
+def read_wav(path, seconds):
     with wave.open(path, "rb") as w:
         if w.getframerate() != RATE or w.getsampwidth() != 2:
             raise SystemExit(f"{path}: need 48 kHz S16 WAV")
-        data = np.frombuffer(w.readframes(w.getnframes()), np.int16)
-        data = data.reshape(-1, w.getnchannels())[:, 0] / 32768.0
+        d = np.frombuffer(w.readframes(w.getnframes()), np.int16)
+        d = d.reshape(-1, w.getnchannels())[:, 0] / 32768.0
     n = int(seconds * RATE)
-    reps = int(np.ceil(n / len(data)))
-    return np.tile(data, reps)[:n]
+    return np.tile(d, int(np.ceil(n / len(d))))[:n]
+
+
+def shaped_noise(n, rng, tilt=0.5, hi=7000.0):
+    spec = np.fft.rfft(rng.standard_normal(n))
+    f = np.fft.rfftfreq(n, 1 / RATE)
+    spec *= 1 / np.maximum(f, 100.0) ** tilt
+    spec[f > hi] *= 0.1
+    x = np.fft.irfft(spec, n)
+    return x / np.max(np.abs(x))
+
+
+def talker(seconds, rng, rate_hz):
+    """Speech-like: shaped noise gated in syllable-rate bursts."""
+    n = int(seconds * RATE)
+    env = (np.sin(2 * np.pi * rate_hz * np.arange(n) / RATE
+                  + rng.uniform(0, 6.28)) > -0.2).astype(float)
+    return 0.3 * shaped_noise(n, rng) * env
+
+
+def synthetic_ir(rng, rt60=0.25, delay_ms=3.0):
+    """Exponentially decaying room response with a direct-path delay."""
+    n = int(rt60 * RATE)
+    ir = rng.standard_normal(n) * np.exp(-6.9 * np.arange(n) / n)
+    d = int(delay_ms * RATE / 1000)
+    ir = np.concatenate([np.zeros(d), [1.0], 0.3 * ir])
+    return 0.5 * ir / np.sqrt(np.sum(ir ** 2))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("out", help="output WAV path")
-    ap.add_argument("--far-end", help="48 kHz S16 WAV to use as far-end signal")
+    ap.add_argument("out_dir")
+    ap.add_argument("--far-wav", help="48 kHz S16 far-end recording (music/speech)")
+    ap.add_argument("--near-wav", help="48 kHz S16 near-end speech recording")
+    ap.add_argument("--ir-wav", help="48 kHz speaker-to-mic impulse response")
     ap.add_argument("--lead", type=float, default=2.0)
     ap.add_argument("--far", type=float, default=12.0)
-    ap.add_argument("--tail", type=float, default=6.0)
-    args = ap.parse_args()
-
+    ap.add_argument("--dt", type=float, default=6.0)
+    ap.add_argument("--near", type=float, default=6.0)
+    ap.add_argument("--noise", type=float, default=6.0)
+    ap.add_argument("--noise-db", type=float, default=-45.0,
+                    help="testbench ambient noise level, dBFS")
+    a = ap.parse_args()
+    os.makedirs(a.out_dir, exist_ok=True)
     rng = np.random.default_rng(1)
-    far = (read_far_end(args.far_end, args.far) if args.far_end
-           else speech_shaped_bursts(args.far, rng))
-    sig = np.concatenate([np.zeros(int(args.lead * RATE)), far,
-                          np.zeros(int(args.tail * RATE))])
-    pcm = np.clip(sig * 32767, -32768, 32767).astype(np.int16)
-    stereo = np.repeat(pcm[:, None], 2, axis=1)
 
-    with wave.open(args.out, "wb") as w:
-        w.setnchannels(2)
-        w.setsampwidth(2)
-        w.setframerate(RATE)
-        w.writeframes(stereo.tobytes())
+    t = np.cumsum([0, a.lead, a.far, a.dt, a.near, a.noise])
+    lay = {"far": [t[1], t[3]], "far_only": [t[1], t[2]], "dt": [t[2], t[3]],
+           "near_only": [t[3], t[4]], "noise_only": [t[4], t[5]], "end": t[5]}
+    n = int(t[5] * RATE)
 
-    layout = {"far_start": args.lead, "far_end": args.lead + args.far,
-              "end": args.lead + args.far + args.tail}
-    with open(args.out + ".json", "w") as f:
-        json.dump(layout, f)
+    def place(sig, start):
+        x = np.zeros(n)
+        i = int(start * RATE)
+        x[i:i + len(sig)] = sig[:n - i]
+        return x
+
+    far_sig = read_wav(a.far_wav, a.far + a.dt) if a.far_wav else talker(a.far + a.dt, rng, 3.0)
+    near_sig = read_wav(a.near_wav, a.dt + a.near) if a.near_wav else talker(a.dt + a.near, rng, 4.5)
+    far = place(far_sig, lay["far"][0])
+    near = place(near_sig, lay["dt"][0])
+
+    ir = read_wav(a.ir_wav, 0.5) if a.ir_wav else synthetic_ir(rng)
+    echo = np.convolve(far, ir)[:n]
+    noise = 10 ** (a.noise_db / 20) * shaped_noise(n, rng, tilt=1.0)
+    mic = echo + near + noise
+
+    write_wav(os.path.join(a.out_dir, "far.wav"), far, channels=2)
+    write_wav(os.path.join(a.out_dir, "near.wav"), near)
+    write_wav(os.path.join(a.out_dir, "mic_bench.wav"), mic)
+    write_wav(os.path.join(a.out_dir, "near_clean.wav"), near)
+    with open(os.path.join(a.out_dir, "layout.json"), "w") as f:
+        json.dump({k: (list(map(float, v)) if isinstance(v, list) else float(v))
+                   for k, v in lay.items()}, f, indent=1)
 
 
 if __name__ == "__main__":

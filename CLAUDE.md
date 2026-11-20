@@ -7,17 +7,22 @@ Voice capture on the i.MX8MP HiFi4 under IPC3, enabled out of the box:
 micfil DAI (48 kHz) → webrtc_hpf → webrtc_aec (ref = playback demux) →
 SRC 48→16 kHz → webrtc_ns → Voice PCM. Raw PCM stays unprocessed.
 Reuse the upstream webrtc_* modules; write integration only (Kconfig,
-topology1 m4, IPC3 glue), never new DSP algorithms.
+topology1 m4, testbench topology, IPC3 glue), never new DSP algorithms.
 
 ## Definition of done
-`scripts/voice-loop/voice-loop.sh` exits 0. Gates live in
-`scripts/voice-loop/voice-loop.env`:
-- NS-only stage (P2): `GATES=nr,xrun`
-- AEC stage (P3+): `GATES=erle,nr,xrun` (ERLE >= 25 dB, NR >= 10 dB, 0 xruns)
+`scripts/voice-loop/voice-loop.sh` exits 0 (see scripts/voice-loop/README.md).
+- `bench` (host testbench, deterministic) must pass before any board run:
+  `BENCH_GATES=erle,nr,near,dt,dtsdr`
+- `measure` (EVK, acoustic):
+  - NS-only stage (P2): `GATES=nr,near,xrun`
+  - AEC stage (P3+): `GATES=erle,nr,near,xrun`
+Thresholds: ERLE >= 25 dB, NR >= 10 dB, near-end loss <= 3 dB,
+double-talk near gain >= -6 dB and SDR >= 12 dB, 0 xruns.
+Never relax a threshold to get a PASS; report instead.
 
 ## Loop
 1. Make the smallest change toward the current phase.
-2. Run `voice-loop.sh` (or `build` alone while it does not compile).
+2. Run `voice-loop.sh build` until it compiles, then `bench`, then the board.
 3. Read `scripts/voice-loop/out/latest/metrics.json` and the logs next to it.
 4. On FAIL: fix and repeat. Stop and report after 5 failed iterations,
    or on any deploy error you cannot explain from dmesg.
@@ -29,9 +34,12 @@ topology1 m4, IPC3 glue), never new DSP algorithms.
   (`sof-mt8195-mt6359-rt1019-rt5682.m4`): volume + demux playback,
   10 ms periods, AEC ref buffer wired to the demux; clone
   `google_rtc_audio_processing.m4` for webrtc_aec (documented drop-in).
-- AEC backend AECm (`CONFIG_WEBRTC_AEC_BACKEND_AECM=y`, set explicitly).
+- AEC backend: Float MDF (`CONFIG_WEBRTC_AEC_BACKEND_FLOAT=y`, the upstream
+  default for `=y`; uses the 8MP FPU). AECm is the fallback, AEC3 the
+  candidate; switching needs P4 numbers from both stages.
 - Built in (`=y`), no LLEXT (IPC3).
 - No kcontrols in v1 (webrtc switch controls are IPC4-only).
+- The 10 ms playback period applies only to the AEC topology variant.
 
 ## Never
 - push, force-push, or rewrite pushed history

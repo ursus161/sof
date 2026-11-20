@@ -7,7 +7,7 @@ Voice capture on the i.MX8MP HiFi4 under IPC3, enabled out of the box:
 micfil DAI (48 kHz) → webrtc_hpf → webrtc_aec (ref = playback demux) →
 SRC 48→16 kHz → webrtc_ns → Voice PCM. Raw PCM stays unprocessed.
 Reuse the upstream webrtc_* modules; write integration only (Kconfig,
-topology1 m4, testbench topology, IPC3 glue), never new DSP algorithms.
+topology1 m4, host-library build of the webrtc modules + topology2 test topology for the bench, IPC3 glue), never new DSP algorithms.
 
 ## Definition of done
 `scripts/voice-loop/voice-loop.sh` exits 0 (see scripts/voice-loop/README.md).
@@ -34,9 +34,10 @@ Never relax a threshold to get a PASS; report instead.
   (`sof-mt8195-mt6359-rt1019-rt5682.m4`): volume + demux playback,
   10 ms periods, AEC ref buffer wired to the demux; clone
   `google_rtc_audio_processing.m4` for webrtc_aec (documented drop-in).
-- AEC backend: Float MDF (`CONFIG_WEBRTC_AEC_BACKEND_FLOAT=y`, the upstream
+- AEC backend: Float, WebRTC classic float AEC (`CONFIG_WEBRTC_AEC_BACKEND_FLOAT=y`, the upstream
   default for `=y`; uses the 8MP FPU). AECm is the fallback, AEC3 the
-  candidate; switching needs P4 numbers from both stages.
+  candidate (its CMake hardcodes a toolchain path: fix upstream first);
+  switching needs P4 numbers from both stages.
 - Built in (`=y`), no LLEXT (IPC3).
 - No kcontrols in v1 (webrtc switch controls are IPC4-only).
 - The 10 ms playback period applies only to the AEC topology variant.

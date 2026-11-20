@@ -11,13 +11,18 @@ topology1 m4, host-library build of the webrtc modules + topology2 test topology
 
 ## Definition of done
 `scripts/voice-loop/voice-loop.sh` exits 0 (see scripts/voice-loop/README.md).
-- `bench` (host testbench, deterministic) must pass before any board run:
-  `BENCH_GATES=erle,nr,near,dt,dtsdr`
-- `measure` (EVK, acoustic):
-  - NS-only stage (P2): `GATES=nr,near,xrun`
-  - AEC stage (P3+): `GATES=erle,nr,near,xrun`
+Architecture first, algorithms later. Stages, in order:
+1. Skeleton (stub backends, `CONFIG_COMP_WEBRTC_{AEC,NS,HPF}_STUB=y`):
+   full topology on the EVK, Voice must equal Raw.
+   `GATES=passlvl,passcorr,xrun`, and dmesg/trace must show
+   `webrtc_aec: mic_src=<n> ref_src=<m>` with ref_src >= 0.
+   Check the reference stream itself with SOF probes on the AEC ref input.
+2. Real NS (`webrtc_ns` real, AEC still stub): `GATES=nr,near,xrun`
+3. Real AEC (Float backend): `bench` first
+   (`BENCH_GATES=erle,nr,near,dt,dtsdr`), then `GATES=erle,nr,near,xrun`
 Thresholds: ERLE >= 25 dB, NR >= 10 dB, near-end loss <= 3 dB,
-double-talk near gain >= -6 dB and SDR >= 12 dB, 0 xruns.
+double-talk near gain >= -6 dB and SDR >= 12 dB, pass-through level
+<= 1 dB and correlation >= 0.9, 0 xruns.
 Never relax a threshold to get a PASS; report instead.
 
 ## Loop
@@ -30,6 +35,9 @@ Never relax a threshold to get a PASS; report instead.
    to the next to-do of the phase.
 
 ## Fixed decisions (do not revisit without new measurements)
+- Architecture first: the whole chain runs with the upstream stub
+  backends before any real algorithm; swapping in a real backend is a
+  Kconfig change only, never a topology change.
 - Topology mirrors the IPC3 Chromebook AEC topology
   (`sof-mt8195-mt6359-rt1019-rt5682.m4`): volume + demux playback,
   10 ms periods, AEC ref buffer wired to the demux; clone

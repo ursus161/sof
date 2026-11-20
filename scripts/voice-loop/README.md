@@ -12,7 +12,7 @@ host testbench, which compiles the same C modules for the PC.
 
 | Stage | Runs | Proves | Cannot prove |
 | --- | --- | --- | --- |
-| `bench` | SOF host testbench on WAV files | Algorithm quality, exactly and repeatably: echo removed, noise removed, near-end talker kept, also in double talk. Fast, CI-friendly | DSP timing, real acoustics |
+| `bench` | SOF host testbench (IPC4 library, topology2 webrtc classes) on WAV files | Algorithm quality, exactly and repeatably: echo removed, noise removed, near-end talker kept, also in double talk. Fast, CI-friendly | DSP timing, real acoustics |
 | `measure` | The EVK with real speaker and mics | Real echo path, real noise, xruns, end-to-end integration | Exact near-end preservation in double talk |
 
 `all` runs build → bench → deploy → measure and stops at the first FAIL.
@@ -64,9 +64,11 @@ board the residual noise floor caps ERLE.
    the build paths, and optionally `NEAR_PLAY_CMD` (a second speaker next
    to the EVK mics, driven from this host).
 3. Host needs `python3` + `numpy`, `cmake`, `ninja`, `alsa-utils`
-   (`alsatplg`), the imx8m firmware toolchain, and for `bench` an IPC3
-   testbench build (`scripts/rebuild-testbench.sh`) plus a testbench
-   topology for the voice chain (`BENCH_TPLG`).
+   (`alsatplg`), the imx8m firmware toolchain, and for `bench` the host
+   testbench (`scripts/rebuild-testbench.sh`, IPC4 library) with the webrtc
+   modules enabled, plus a topology2 test topology for the chain
+   (`BENCH_TPLG`). The webrtc modules do not build in the host library yet:
+   their CMake uses Zephyr-only calls (P1 task).
 
 ## Run
 

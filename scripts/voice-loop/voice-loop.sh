@@ -32,7 +32,7 @@ ENV_FILE=${VOICE_LOOP_ENV:-$HERE/voice-loop.env}
 : "${TPLG_BUILD_DIR:=$OUT_DIR/build-tplg}"
 : "${STIM_ARGS:=}"
 # bench
-: "${TESTBENCH:=$SOF_TOP/tools/testbench/build_testbench/install/bin/sof-testbench}"
+: "${TESTBENCH:=$SOF_TOP/tools/testbench/build_testbench/install/bin/sof-testbench4}"
 : "${BENCH_TPLG:=}"
 : "${BENCH_PIPES:=1,2}"
 : "${BENCH_ARGS:=-r 48000 -c 1 -b S16_LE -R 16000 -n 1}"
@@ -77,7 +77,7 @@ stage_build() {
 
 stage_bench() {
 	if [ -z "$BENCH_TPLG" ]; then
-		log "bench: SKIP (no BENCH_TPLG yet; a testbench topology is a P1 task)"
+		log "bench: SKIP (set BENCH_TPLG; webrtc modules must first build in the host library, P1)"
 		return 0
 	fi
 	[ -x "$TESTBENCH" ] || { log "no testbench at $TESTBENCH (scripts/rebuild-testbench.sh)"; return 2; }

@@ -42,6 +42,9 @@ GATES = {  # name: (metric, comparison, default threshold)
     "dt": ("dt_gain", ">=", -6.0),
     "dtsdr": ("dt_sdr", ">=", 12.0),
     "xrun": ("xruns", "<=", 0),
+    # skeleton stage (stub backends): Voice must equal Raw in level and shape
+    "passlvl": ("pass_level_db", "<=", 1.0),
+    "passcorr": ("pass_corr", ">=", 0.9),
 }
 
 
@@ -154,6 +157,16 @@ def main():
         res["erle"] = ratio_db(ref, out, rr, ro, fo[0] + a.converge, fo[1] - m)
         res["nr"] = ratio_db(ref, out, rr, ro, nz[0] + m, nz[1] - m)
         res["near_loss"] = ratio_db(ref, out, rr, ro, no[0] + m, no[1] - m)
+        # Pass-through check for the skeleton stage: over the far-end span,
+        # Voice must match Raw in level and waveform (after rate + delay).
+        span = (lay["far"][0] + m, lay["far"][1] - m)
+        raw_r = resample(ref, rr, ro)
+        lag = align(out, raw_r, int(a.max_delay * ro))
+        y, x = win(out[lag:], ro, *span), win(raw_r, ro, *span)
+        k = min(len(y), len(x))
+        y, x = y[:k], x[:k]
+        res["pass_level_db"] = abs(10 * np.log10(pw(x) / pw(y)))
+        res["pass_corr"] = float(np.dot(x, y) / np.sqrt(pw(x) * pw(y)) / k)
     res["xruns"] = count_xruns(a.logs)
 
     thr = {k: v[2] for k, v in GATES.items()}

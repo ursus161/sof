@@ -48,7 +48,7 @@ ENV_FILE=${VOICE_LOOP_ENV:-$HERE/voice-loop.env}
 : "${RAW_FMT:=-f S16_LE -r 48000 -c 1}"
 : "${VOICE_FMT:=-f S16_LE -r 16000 -c 1}"
 : "${NEAR_PLAY_CMD:=}"
-: "${GATES:=nr,near,xrun}"
+: "${GATES:=passlvl,passcorr,xrun}"
 
 log() { printf '[voice-loop] %s\n' "$*" >&2; }
 need_evk() { [ -n "$EVK_HOST" ] || { log "set EVK_HOST in $ENV_FILE"; exit 2; }; }

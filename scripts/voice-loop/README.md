@@ -42,6 +42,8 @@ pass real recordings with `STIM_ARGS` for meaningful numbers.
 | `dt` | near-end gain during double talk (bench) | ≥ −6 dB | an AEC that ducks the talker |
 | `dtsdr` | near-end signal-to-distortion in double talk (bench) | ≥ 12 dB | echo or artefacts over the talker |
 | `xrun` | overrun/underrun/xrun log lines | 0 | real-time failures |
+| `passlvl` | Voice vs Raw level, far-end span (skeleton stage) | ≤ 1 dB | a chain that is not a clean pass-through |
+| `passcorr` | Voice vs Raw waveform correlation (skeleton stage) | ≥ 0.9 | wrong routing, wrong channel, corruption |
 
 Self-test with simulated processors (synthetic signals): a good AEC+NS
 passes; a muting "cheater", a pass-through and a 12 dB talker-ducking AEC
